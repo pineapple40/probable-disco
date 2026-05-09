@@ -1,0 +1,102 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        background: #f5f6f7;
+        color: #1f2937;
+      }
+      .wrap {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 12px;
+      }
+      .card {
+        background: #fff;
+        border-radius: 12px;
+        padding: 14px;
+        box-shadow: 0 2px 10px rgba(0,0,0,.08);
+        margin-bottom: 12px;
+      }
+      button, a.btn {
+        display: block;
+        width: 100%;
+        border: 0;
+        border-radius: 10px;
+        padding: 14px;
+        font-size: 16px;
+        font-weight: 700;
+        text-align: center;
+        text-decoration: none;
+      }
+      .copy { background: #2563eb; color: #fff; }
+      .open { background: #16a34a; color: #fff; margin-top: 10px; }
+      pre {
+        white-space: pre-wrap;
+        background: #f8fafc;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 10px;
+        max-height: 50vh;
+        overflow-y: auto;
+      }
+      .hint { font-size: 12px; color: #6b7280; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>CCB Daily Log Button</h1>
+      <div class="card">
+        <button class="copy" onclick="copyLog()">Copy Log Text</button>
+        <a id="btLink" class="btn open" href="#" target="_blank" rel="noopener">Open Buildertrend Daily Logs</a>
+        <p class="hint" id="status">Loading latest log...</p>
+      </div>
+      <div class="card">
+        <pre id="logText"></pre>
+      </div>
+    </div>
+
+    <script>
+      let latestText = '';
+
+      function loadData() {
+        google.script.run.withSuccessHandler(function (text) {
+          latestText = text || '';
+          document.getElementById('logText').textContent = latestText || 'No log generated yet.';
+          document.getElementById('status').textContent = latestText
+            ? 'Ready to copy.'
+            : 'Submit a form entry to generate a daily log.';
+        }).getLatestLogText();
+
+        google.script.run.withSuccessHandler(function (url) {
+          document.getElementById('btLink').href = url;
+        }).getBuildertrendUrl();
+      }
+
+      async function copyLog() {
+        if (!latestText) return;
+        try {
+          await navigator.clipboard.writeText(latestText);
+          document.getElementById('status').textContent = 'Copied to clipboard.';
+        } catch (e) {
+          const temp = document.createElement('textarea');
+          temp.value = latestText;
+          document.body.appendChild(temp);
+          temp.select();
+          document.execCommand('copy');
+          document.body.removeChild(temp);
+          document.getElementById('status').textContent = 'Copied (fallback mode).';
+        }
+      }
+
+      loadData();
+    </script>
+  </body>
+</html>
