@@ -94,7 +94,7 @@ export async function setStrategyStatus(
             strategyVersionId: latest.id,
             accountId: account.id,
             status: "running",
-            state: { openSymbols: [] },
+            state: { openPositions: {} },
             lastHeartbeatAt: new Date(),
           },
         });

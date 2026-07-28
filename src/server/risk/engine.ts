@@ -35,7 +35,21 @@ export function evaluateOrderRisk(order: OrderRiskInput, ctx: RiskCheckContext):
     );
   }
 
-  if (ctx.restrictedHoursOnly && !ctx.quote.isMarketOpen && !order.isExtendedHours) {
+  // Extended-hours trading isn't actually implemented anywhere in the
+  // broker (no separate extended-hours matching/quote logic exists), so the
+  // flag must never be used to bypass the market-closed check below -
+  // otherwise a caller could get an order through purely by setting it,
+  // directly contradicting the market-closed rejection message.
+  if (order.isExtendedHours) {
+    return reject(
+      "extended_hours_unsupported",
+      "Extended-hours trading is not supported in this release.",
+      estimatedEntryPrice,
+      estimatedNotional,
+    );
+  }
+
+  if (ctx.restrictedHoursOnly && !ctx.quote.isMarketOpen) {
     return reject(
       "market_closed",
       "The simulated market is currently closed. Extended-hours trading is not supported in this release.",

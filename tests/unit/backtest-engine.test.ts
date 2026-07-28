@@ -185,6 +185,25 @@ describe("runBacktest", () => {
     const entriesAtSameTime = trades.filter((t) => t.entryAt.getTime() === bars[2]!.ts.getTime());
     expect(entriesAtSameTime.length).toBeLessThanOrEqual(2);
   });
+
+  it("never exceeds maxTradesPerDay when multiple symbols signal on the same bar", () => {
+    const definition: StrategyDefinition = {
+      symbols: ["A", "B", "C"],
+      maxTradesPerDay: 1,
+      positionSizing: { method: "fixed_quantity", value: 1 },
+      entryRules: [{ type: "price_above", value: 1 }],
+      exitRules: [],
+    };
+    const bars: StrategyBar[] = [bar(0, 10, 10), bar(1, 10, 10), bar(2, 10, 10), bar(3, 10, 10)];
+    const settings: BacktestSettings = { ...NO_COST_SETTINGS, maxPositions: 3 };
+
+    const { trades } = runBacktest(definition, { A: bars, B: bars, C: bars }, settings);
+    // All three symbols signal simultaneously and there's capacity for 3
+    // concurrent positions, but maxTradesPerDay: 1 must still cap same-day
+    // entries to one, even across different symbols.
+    const entriesAtSameTime = trades.filter((t) => t.entryAt.getTime() === bars[2]!.ts.getTime());
+    expect(entriesAtSameTime.length).toBeLessThanOrEqual(1);
+  });
 });
 
 describe("computeBacktestMetrics", () => {
@@ -218,5 +237,38 @@ describe("computeBacktestMetrics", () => {
     const metrics = computeBacktestMetrics(trades, equityCurve, 100_000);
     expect(metrics.profitFactor).toBeNull();
     expect(metrics.sharpeRatio).toBeNull();
+  });
+
+  it("computes max drawdown % against the peak at the time of the drawdown, not the final peak", () => {
+    const trades = [
+      { symbol: "T", side: "BUY" as const, quantity: 1, entryPrice: 100, exitPrice: 50, entryAt: day(0), exitAt: day(1), pnl: -50, commission: 0, reason: "stop_loss" },
+    ];
+    // Equity falls from 100 to 50 (a 50% drawdown at the time), then later
+    // grows to 1000 - the 50% drawdown must not be diluted to 5% just
+    // because a much higher peak was reached afterward.
+    const equityCurve = [
+      { date: day(0), equity: 100 },
+      { date: day(1), equity: 50 },
+      { date: day(2), equity: 1000 },
+    ];
+    const metrics = computeBacktestMetrics(trades, equityCurve, 100);
+    expect(metrics.maxDrawdownPct).toBeCloseTo(50, 8);
+  });
+
+  it("computes Sharpe using standard deviation around the mean, not RMS around zero", () => {
+    // Daily returns alternate +5%/-5%/+5%/-5%/+5% (mean = +1%). The correct
+    // Sharpe uses stdDev around that +1% mean (~3.24 annualized); the buggy
+    // RMS-around-zero formula would instead produce ~3.17, since all
+    // |return| values are equal it ignores the mean entirely.
+    const equityCurve = [
+      { date: new Date(2024, 0, 1), equity: 100_000 },
+      { date: new Date(2024, 0, 2), equity: 105_000 },
+      { date: new Date(2024, 0, 3), equity: 99_750 },
+      { date: new Date(2024, 0, 4), equity: 104_737.5 },
+      { date: new Date(2024, 0, 5), equity: 99_500.625 },
+      { date: new Date(2024, 0, 6), equity: 104_475.65625 },
+    ];
+    const metrics = computeBacktestMetrics([], equityCurve, 100_000);
+    expect(metrics.sharpeRatio).toBeCloseTo(3.2396, 1);
   });
 });

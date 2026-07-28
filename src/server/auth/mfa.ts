@@ -15,7 +15,20 @@ function generateRecoveryCodes(count = 10): string[] {
   return Array.from({ length: count }, () => randomBytes(5).toString("hex"));
 }
 
+export class MfaAlreadyEnabledError extends Error {
+  constructor() {
+    super("MFA is already enabled for this account. Disable it before starting a new enrollment.");
+  }
+}
+
 export async function beginMfaEnrollment(userId: string, email: string) {
+  const existing = await prisma.mfaConfig.findUnique({ where: { userId } });
+  // Re-enrolling while MFA is already active must never silently replace the
+  // active secret and flip enabled to false - that would let anyone holding
+  // a valid session (e.g. a hijacked one) defeat the second factor without
+  // ever proving possession of the current authenticator.
+  if (existing?.enabled) throw new MfaAlreadyEnabledError();
+
   const secret = generateSecret();
   const otpauthUrl = generateURI({ issuer: ISSUER, label: email, secret });
   const qrDataUrl = await QRCode.toDataURL(otpauthUrl);

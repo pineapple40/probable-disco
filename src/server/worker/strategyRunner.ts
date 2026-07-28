@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { logger } from "@/lib/logger";
 import { getMarketDataProvider } from "@/server/market-data/provider";
+import { startOfUtcDay } from "@/server/market-data/calendar";
 import { evaluateEntry, evaluateExit, type StrategyBar } from "@/server/strategy/evaluator";
 import type { StrategyDefinition } from "@/server/strategy/types";
 import { placeOrder } from "@/server/orders/service";
@@ -11,24 +12,36 @@ const WARMUP_DAYS = 90;
 const MAX_CONSECUTIVE_ERRORS = 5;
 
 interface RunState {
-  openSymbols: string[];
-  consecutiveErrors?: number;
+  openPositions?: Record<string, number>; // symbol -> quantity this run entered with
+  consecutiveErrorsBySymbol?: Record<string, number>;
 }
 
-async function loadBars(symbol: string): Promise<StrategyBar[]> {
+/**
+ * Loads completed daily bars only. The simulated provider generates a full
+ * (deterministic) daily candle for "today" the instant it's asked for one,
+ * regardless of the actual time of day - so including it here would let the
+ * strategy react to today's already-decided end-of-day close before the
+ * trading day is actually over (look-ahead). Only bars strictly before today
+ * are used to decide; any resulting order still fills at the current live
+ * quote.
+ */
+export async function loadBars(symbol: string): Promise<StrategyBar[]> {
   const instrument = await prisma.instrument.findUniqueOrThrow({ where: { symbol } });
   const provider = getMarketDataProvider();
   const to = new Date();
   const from = new Date(to.getTime() - WARMUP_DAYS * 24 * 60 * 60 * 1000);
   const candles = await provider.getCandles(instrument.id, symbol, "D1", from, to);
-  return candles.map((c) => ({
-    ts: c.ts,
-    open: Number(c.open),
-    high: Number(c.high),
-    low: Number(c.low),
-    close: Number(c.close),
-    volume: Number(c.volume),
-  }));
+  const todayStart = startOfUtcDay(to).getTime();
+  return candles
+    .filter((c) => c.ts.getTime() < todayStart)
+    .map((c) => ({
+      ts: c.ts,
+      open: Number(c.open),
+      high: Number(c.high),
+      low: Number(c.low),
+      close: Number(c.close),
+      volume: Number(c.volume),
+    }));
 }
 
 async function logRun(runId: string, level: "info" | "warn" | "error", message: string, detail?: unknown) {
@@ -53,9 +66,9 @@ async function tickRun(run: {
   }
 
   const definition = version.definition as unknown as StrategyDefinition;
-  const state = (run.state as RunState | null) ?? { openSymbols: [] };
-  const openSymbols = new Set(state.openSymbols ?? []);
-  let consecutiveErrors = state.consecutiveErrors ?? 0;
+  const state = (run.state as RunState | null) ?? {};
+  const openPositions: Record<string, number> = { ...(state.openPositions ?? {}) };
+  const consecutiveErrorsBySymbol: Record<string, number> = { ...(state.consecutiveErrorsBySymbol ?? {}) };
   const todayKey = new Date().toISOString().slice(0, 10);
 
   for (const symbol of definition.symbols) {
@@ -64,13 +77,14 @@ async function tickRun(run: {
       if (bars.length < 2) continue;
       const lastIndex = bars.length - 1;
 
-      if (openSymbols.has(symbol)) {
+      const ownedQuantity = openPositions[symbol] ?? 0;
+      if (ownedQuantity > 0) {
         const position = await prisma.position.findFirst({
           where: { accountId: run.accountId, instrument: { symbol }, quantity: { gt: 0 } },
         });
         if (!position) {
           // Position was closed outside the runner (e.g. manually); reconcile state.
-          openSymbols.delete(symbol);
+          delete openPositions[symbol];
           continue;
         }
         const exitEval = evaluateExit(definition, bars, lastIndex, {
@@ -78,22 +92,34 @@ async function tickRun(run: {
           entryIndex: 0,
         });
         if (exitEval.shouldExit) {
-          const result = await placeOrder(account.userId, {
-            symbol,
-            side: "SELL",
-            type: "MARKET",
-            quantity: Number(position.quantity),
-            duration: "DAY",
-            isExtendedHours: false,
-            idempotencyKey: `strategyRun:${run.id}:${symbol}:${todayKey}:exit`,
-          });
-          if (result.order.status === "FILLED") {
-            openSymbols.delete(symbol);
-            await logRun(run.id, "info", `Exited ${symbol}`, { reason: exitEval.reason });
-          } else if (result.order.status === "REJECTED") {
-            await logRun(run.id, "warn", `Exit order for ${symbol} rejected`, {
-              reason: result.order.rejectReason,
+          // Only sell the quantity this run actually entered with - never
+          // liquidate shares of the same symbol held outside this run (a
+          // manual purchase, or another strategy run sharing the account).
+          const sellQuantity = Math.min(ownedQuantity, Number(position.quantity));
+          if (sellQuantity > 0) {
+            const result = await placeOrder(account.userId, {
+              symbol,
+              side: "SELL",
+              type: "MARKET",
+              quantity: sellQuantity,
+              duration: "DAY",
+              isExtendedHours: false,
+              idempotencyKey: `strategyRun:${run.id}:${symbol}:${todayKey}:exit`,
             });
+
+            await prisma.order.updateMany({
+              where: { id: result.order.id },
+              data: { strategyRunId: run.id },
+            });
+
+            if (result.order.status === "FILLED") {
+              delete openPositions[symbol];
+              await logRun(run.id, "info", `Exited ${symbol}`, { reason: exitEval.reason, quantity: sellQuantity });
+            } else if (result.order.status === "REJECTED") {
+              await logRun(run.id, "warn", `Exit order for ${symbol} rejected`, {
+                reason: result.order.rejectReason,
+              });
+            }
           }
         }
       } else {
@@ -140,7 +166,7 @@ async function tickRun(run: {
           });
 
           if (result.order.status === "FILLED") {
-            openSymbols.add(symbol);
+            openPositions[symbol] = Number(result.order.filledQuantity);
             await logRun(run.id, "info", `Entered ${symbol}`, { quantity, lastClose });
           } else if (result.order.status === "REJECTED") {
             await logRun(run.id, "warn", `Entry order for ${symbol} rejected`, {
@@ -149,19 +175,24 @@ async function tickRun(run: {
           }
         }
       }
-      consecutiveErrors = 0;
+      consecutiveErrorsBySymbol[symbol] = 0;
     } catch (err) {
-      consecutiveErrors++;
+      consecutiveErrorsBySymbol[symbol] = (consecutiveErrorsBySymbol[symbol] ?? 0) + 1;
       logger.error({ err, runId: run.id, symbol }, "Strategy runner tick failed for symbol");
       await logRun(run.id, "error", `Error evaluating ${symbol}: ${(err as Error).message}`);
     }
   }
 
-  const newStatus = consecutiveErrors >= MAX_CONSECUTIVE_ERRORS ? "error" : "running";
+  // Pause the run if any single symbol has failed repeatedly - tracking this
+  // per-symbol (rather than one shared counter across all symbols) means a
+  // persistently broken symbol can't hide behind other symbols succeeding on
+  // the same tick.
+  const maxConsecutiveErrors = Math.max(0, ...Object.values(consecutiveErrorsBySymbol));
+  const newStatus = maxConsecutiveErrors >= MAX_CONSECUTIVE_ERRORS ? "error" : "running";
   await prisma.strategyRun.update({
     where: { id: run.id },
     data: {
-      state: { openSymbols: Array.from(openSymbols), consecutiveErrors } as never,
+      state: { openPositions, consecutiveErrorsBySymbol } as never,
       lastHeartbeatAt: new Date(),
       status: newStatus,
     },

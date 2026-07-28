@@ -50,9 +50,15 @@ export function computeBacktestMetrics(
 
   let peak = initialCapital;
   let maxDrawdown = 0;
+  let maxDrawdownPct = 0;
   for (const point of equityCurve) {
     peak = Math.max(peak, point.equity);
-    maxDrawdown = Math.max(maxDrawdown, peak - point.equity);
+    const drawdown = peak - point.equity;
+    maxDrawdown = Math.max(maxDrawdown, drawdown);
+    // Percentage relative to THIS point's own peak-so-far, not the final
+    // peak of the whole run - otherwise a big drawdown followed by later
+    // growth understates how large the drawdown actually was at the time.
+    if (peak > 0) maxDrawdownPct = Math.max(maxDrawdownPct, (drawdown / peak) * 100);
   }
 
   const holdingTimes = trades.map((t) => (t.exitAt.getTime() - t.entryAt.getTime()) / 60_000);
@@ -65,7 +71,7 @@ export function computeBacktestMetrics(
     netPnl,
     netReturnPct: initialCapital > 0 ? (netPnl / initialCapital) * 100 : 0,
     maxDrawdown,
-    maxDrawdownPct: peak > 0 ? (maxDrawdown / peak) * 100 : 0,
+    maxDrawdownPct,
     winRatePct: trades.length > 0 ? (wins.length / trades.length) * 100 : 0,
     lossRatePct: trades.length > 0 ? (losses.length / trades.length) * 100 : 0,
     profitFactor: grossLoss !== 0 ? Math.abs(grossProfit / grossLoss) : null,
@@ -99,10 +105,21 @@ function computeDailyReturns(equityCurve: EquityPoint[]): number[] {
 
 function annualizedRatio(returns: number[], downsideOnly: boolean): number | null {
   const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-  const deviationSource = downsideOnly ? returns.filter((r) => r < 0) : returns;
-  if (deviationSource.length === 0) return null;
-  const variance =
-    deviationSource.reduce((sum, r) => sum + r * r, 0) / deviationSource.length; // relative to 0, standard for Sortino downside deviation
+
+  if (downsideOnly) {
+    // Sortino: downside deviation is measured relative to zero (a common
+    // simplification of the minimum-acceptable-return), using only
+    // negative returns.
+    const downside = returns.filter((r) => r < 0);
+    if (downside.length === 0) return null;
+    const downsideVariance = downside.reduce((sum, r) => sum + r * r, 0) / downside.length;
+    const downsideDeviation = Math.sqrt(downsideVariance);
+    if (downsideDeviation === 0) return null;
+    return (mean / downsideDeviation) * Math.sqrt(TRADING_DAYS_PER_YEAR);
+  }
+
+  // Sharpe: standard deviation around the mean return, not around zero.
+  const variance = returns.reduce((sum, r) => sum + (r - mean) ** 2, 0) / returns.length;
   const stdDev = Math.sqrt(variance);
   if (stdDev === 0) return null;
   return (mean / stdDev) * Math.sqrt(TRADING_DAYS_PER_YEAR);

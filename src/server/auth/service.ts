@@ -1,3 +1,4 @@
+import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
 import { generateToken, hashToken } from "@/lib/crypto";
@@ -53,16 +54,26 @@ export async function registerUser(input: RegisterInput, meta: SessionMeta) {
   const traderRole = await prisma.role.findUniqueOrThrow({ where: { key: "trader" } });
   const passwordHash = await hashPassword(input.password);
 
-  const user = await prisma.user.create({
-    data: {
-      email: input.email,
-      passwordHash,
-      displayName: input.displayName,
-      roleId: traderRole.id,
-    },
+  // Creating the user and bootstrapping their trader resources (broker
+  // connection, account, risk profile, watchlist) must be atomic - if any
+  // step failed partway with these as separate writes, the user row would
+  // exist but be missing resources (e.g. no trading account), and re-running
+  // registration with the same email would then just no-op (by design, to
+  // avoid revealing whether an email is registered) rather than retry the
+  // bootstrap, leaving the account permanently broken.
+  const user = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({
+      data: {
+        email: input.email,
+        passwordHash,
+        displayName: input.displayName,
+        roleId: traderRole.id,
+      },
+    });
+    await bootstrapTraderResources(tx, created.id);
+    return created;
   });
 
-  await bootstrapTraderResources(user.id);
   await issueEmailVerification(user.id, user.email);
 
   await recordAuditEvent({
@@ -75,8 +86,8 @@ export async function registerUser(input: RegisterInput, meta: SessionMeta) {
   return { requiresVerification: true };
 }
 
-async function bootstrapTraderResources(userId: string) {
-  const brokerConnection = await prisma.brokerConnection.create({
+export async function bootstrapTraderResources(tx: Prisma.TransactionClient, userId: string) {
+  const brokerConnection = await tx.brokerConnection.create({
     data: {
       userId,
       provider: "SIMULATED",
@@ -88,7 +99,7 @@ async function bootstrapTraderResources(userId: string) {
     },
   });
 
-  await prisma.marketDataConnection.create({
+  await tx.marketDataConnection.create({
     data: {
       userId,
       provider: "simulated",
@@ -98,7 +109,7 @@ async function bootstrapTraderResources(userId: string) {
     },
   });
 
-  const account = await prisma.account.create({
+  const account = await tx.account.create({
     data: {
       userId,
       brokerConnectionId: brokerConnection.id,
@@ -111,9 +122,9 @@ async function bootstrapTraderResources(userId: string) {
     },
   });
 
-  await prisma.riskProfile.create({ data: { userId, accountId: account.id } });
-  await prisma.emergencyTradingLock.create({ data: { userId, accountId: account.id } });
-  await prisma.watchlist.create({ data: { userId, name: "My Watchlist" } });
+  await tx.riskProfile.create({ data: { userId, accountId: account.id } });
+  await tx.emergencyTradingLock.create({ data: { userId, accountId: account.id } });
+  await tx.watchlist.create({ data: { userId, name: "My Watchlist" } });
 }
 
 async function issueEmailVerification(userId: string, email: string) {
@@ -195,7 +206,14 @@ export async function resetPassword(rawToken: string, newPassword: string) {
       where: { id: token.userId },
       data: { passwordHash, failedLoginCount: 0, lockedUntil: null },
     }),
-    prisma.passwordResetToken.update({ where: { id: token.id }, data: { usedAt: new Date() } }),
+    // Invalidate every outstanding reset token for this user, not just the
+    // one just used - otherwise an older, still-valid token (e.g. from a
+    // second reset request, or one intercepted from an earlier email) could
+    // still be redeemed to reset the password again after this one succeeds.
+    prisma.passwordResetToken.updateMany({
+      where: { userId: token.userId, usedAt: null },
+      data: { usedAt: new Date() },
+    }),
   ]);
   await revokeAllSessionsForUser(token.userId, "password_reset");
   await recordAuditEvent({ userId: token.userId, category: "security", action: "password_reset" });

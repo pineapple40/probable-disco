@@ -70,6 +70,16 @@ export async function buildRiskCheckContext(
 
   const grossExposureExcludingSymbolNotional = await computeGrossExposure(otherPositions);
 
+  // Loss-lockout checks must reflect the account's current standing, not
+  // just money already banked from closed trades today/this week - a large
+  // unrealized loss sitting in an open position is real risk exposure and
+  // must count toward the same limits.
+  const currentPositionUnrealizedPnl =
+    position && Number(position.quantity) > 0
+      ? (quote.last - Number(position.avgEntryPrice)) * Number(position.quantity)
+      : 0;
+  const totalUnrealizedPnl = currentPositionUnrealizedPnl + (await computeUnrealizedPnl(otherPositions));
+
   return {
     emergencyLocked: emergencyLock?.isLocked ?? false,
     requireStopLoss: riskProfileDb.requireStopLoss,
@@ -96,8 +106,8 @@ export async function buildRiskCheckContext(
     existingPositionQuantity: position ? Number(position.quantity) : 0,
     existingSymbolExposureNotional: position ? Number(position.quantity) * quote.last : 0,
     grossExposureExcludingSymbolNotional,
-    todaysRealizedPlusUnrealizedPnl: Number(closedToday._sum.realizedPnl ?? 0),
-    weekRealizedPlusUnrealizedPnl: Number(closedThisWeek._sum.realizedPnl ?? 0),
+    todaysRealizedPlusUnrealizedPnl: Number(closedToday._sum.realizedPnl ?? 0) + totalUnrealizedPnl,
+    weekRealizedPlusUnrealizedPnl: Number(closedThisWeek._sum.realizedPnl ?? 0) + totalUnrealizedPnl,
     consecutiveLosingTrades,
     recentStopCooldownActiveForSymbol,
 
@@ -123,6 +133,23 @@ async function computeGrossExposure(
   for (const p of positions) {
     const quote = await provider.getQuote(p.instrumentId, p.instrument.symbol);
     total += Number(p.quantity) * quote.last;
+  }
+  return total;
+}
+
+async function computeUnrealizedPnl(
+  positions: Array<{
+    quantity: unknown;
+    avgEntryPrice: unknown;
+    instrumentId: string;
+    instrument: { symbol: string };
+  }>,
+): Promise<number> {
+  const provider = getMarketDataProvider();
+  let total = 0;
+  for (const p of positions) {
+    const quote = await provider.getQuote(p.instrumentId, p.instrument.symbol);
+    total += (quote.last - Number(p.avgEntryPrice)) * Number(p.quantity);
   }
   return total;
 }

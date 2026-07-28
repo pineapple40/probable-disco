@@ -71,6 +71,21 @@ describe("evaluateOrderRisk", () => {
     expect(decision.ruleKey).toBe("market_closed");
   });
 
+  it("rejects extended-hours orders even while the market is open, since it isn't actually implemented", () => {
+    const decision = evaluateOrderRisk(baseOrder({ isExtendedHours: true }), baseContext());
+    expect(decision.allowed).toBe(false);
+    expect(decision.ruleKey).toBe("extended_hours_unsupported");
+  });
+
+  it("does not let isExtendedHours bypass the market-closed rejection", () => {
+    const decision = evaluateOrderRisk(
+      baseOrder({ isExtendedHours: true }),
+      baseContext({ quote: { bid: 99.9, ask: 100.1, last: 100, isMarketOpen: false, isStale: false } }),
+    );
+    expect(decision.allowed).toBe(false);
+    expect(decision.ruleKey).toBe("extended_hours_unsupported");
+  });
+
   it("rejects a stale quote", () => {
     const decision = evaluateOrderRisk(
       baseOrder(),

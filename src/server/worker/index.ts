@@ -2,12 +2,21 @@ import "dotenv/config";
 import { logger } from "@/lib/logger";
 import { tickStrategyRuns } from "@/server/worker/strategyRunner";
 import { evaluateAlerts } from "@/server/alerts/evaluator";
+import { matchOpenOrders } from "@/server/broker/simulated";
 
 const TICK_INTERVAL_MS = 60_000;
 let stopping = false;
 
 async function tick() {
   if (stopping) return;
+
+  try {
+    const filled = await matchOpenOrders();
+    if (filled > 0) logger.info({ filled }, "Order-matching tick complete");
+  } catch (err) {
+    logger.error({ err }, "Order-matching tick failed");
+  }
+
   try {
     const { processed } = await tickStrategyRuns();
     if (processed > 0) logger.info({ processed }, "Strategy runner tick complete");

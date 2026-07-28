@@ -16,6 +16,82 @@ async function recordOrderEvent(
   await tx.orderEvent.create({ data: { orderId, type, detail: detail as never } });
 }
 
+/**
+ * Creates resting protective SELL orders (a stop-loss STOP and/or a
+ * take-profit LIMIT) as children of a filled BUY order, sized to the filled
+ * quantity. These bypass the risk engine (they only ever reduce an existing
+ * long position, never add risk) and are linked via parentOrderId so
+ * matchOpenOrders()/fillOrder() can treat them as one-cancels-other.
+ */
+async function createProtectiveOrders(tx: Prisma.TransactionClient, parent: Order) {
+  if (parent.side !== "BUY" || parent.parentOrderId) return;
+  const quantity = parent.quantity;
+
+  if (parent.stopLossPrice) {
+    const stopLoss = await tx.order.create({
+      data: {
+        accountId: parent.accountId,
+        instrumentId: parent.instrumentId,
+        side: "SELL",
+        type: "STOP",
+        duration: "GTC",
+        quantity,
+        stopPrice: parent.stopLossPrice,
+        status: "NEW",
+        idempotencyKey: `bracket:${parent.id}:stop-loss`,
+        parentOrderId: parent.id,
+      },
+    });
+    await recordOrderEvent(tx, stopLoss.id, "accepted", { reason: "protective_stop_loss" });
+  }
+
+  if (parent.takeProfitPrice) {
+    const takeProfit = await tx.order.create({
+      data: {
+        accountId: parent.accountId,
+        instrumentId: parent.instrumentId,
+        side: "SELL",
+        type: "LIMIT",
+        duration: "GTC",
+        quantity,
+        limitPrice: parent.takeProfitPrice,
+        status: "NEW",
+        idempotencyKey: `bracket:${parent.id}:take-profit`,
+        parentOrderId: parent.id,
+      },
+    });
+    await recordOrderEvent(tx, takeProfit.id, "accepted", { reason: "protective_take_profit" });
+  }
+}
+
+/**
+ * Cancels resting protective orders left over on an instrument once the
+ * account's position in it is fully closed - whether closed by one of those
+ * protective orders itself (one-cancels-other) or by an unrelated manual
+ * sell. Only ever touches orders with parentOrderId set, so an unrelated
+ * resting order a user placed independently (e.g. a fresh limit re-entry) is
+ * never auto-canceled.
+ */
+async function cancelOrphanedProtectiveOrders(
+  tx: Prisma.TransactionClient,
+  accountId: string,
+  instrumentId: string,
+  justFilledOrderId: string,
+) {
+  const position = await tx.position.findUnique({
+    where: { accountId_instrumentId: { accountId, instrumentId } },
+  });
+  if (position && Number(position.quantity) > 0) return;
+
+  const orphans = await tx.order.findMany({
+    where: { accountId, instrumentId, status: "NEW", parentOrderId: { not: null }, id: { not: justFilledOrderId } },
+  });
+  for (const orphan of orphans) {
+    await tx.order.update({ where: { id: orphan.id }, data: { status: "CANCELED" } });
+    await recordOrderEvent(tx, orphan.id, "canceled", { reason: "position_closed" });
+  }
+}
+
 /** Executes a full fill for the order's remaining quantity at the given price. */
 async function fillOrder(
   tx: Prisma.TransactionClient,
@@ -45,6 +121,13 @@ async function fillOrder(
   });
 
   await recordOrderEvent(tx, order.id, "filled", { price: fillPrice, quantity: remaining, symbol });
+
+  if (updated.side === "BUY") {
+    await createProtectiveOrders(tx, updated);
+  } else {
+    await cancelOrphanedProtectiveOrders(tx, updated.accountId, updated.instrumentId, updated.id);
+  }
+
   return updated;
 }
 
@@ -173,6 +256,20 @@ export async function cancelOrder(orderId: string): Promise<Order> {
     }
     const updated = await tx.order.update({ where: { id: orderId }, data: { status: "CANCELED" } });
     await recordOrderEvent(tx, orderId, "canceled");
+
+    // Manually canceling one leg of a bracket (stop-loss or take-profit)
+    // must cancel its sibling too, or the position would be left with only
+    // one-sided protection.
+    if (updated.parentOrderId) {
+      const siblings = await tx.order.findMany({
+        where: { parentOrderId: updated.parentOrderId, status: "NEW", id: { not: updated.id } },
+      });
+      for (const sibling of siblings) {
+        await tx.order.update({ where: { id: sibling.id }, data: { status: "CANCELED" } });
+        await recordOrderEvent(tx, sibling.id, "canceled", { reason: "oco_sibling_canceled" });
+      }
+    }
+
     return updated;
   });
 }

@@ -358,7 +358,7 @@ model Order {
   limitPrice     Decimal?      @db.Decimal(20, 6)
   stopPrice      Decimal?      @db.Decimal(20, 6)
   status         OrderStatus   @default(PENDING_NEW)
-  idempotencyKey String        @unique
+  idempotencyKey String
   isExtendedHours Boolean      @default(false)
   stopLossPrice  Decimal?      @db.Decimal(20, 6)
   takeProfitPrice Decimal?     @db.Decimal(20, 6)
@@ -375,6 +375,7 @@ model Order {
   executions Execution[]
   riskEvents RiskEvent[]
 
+  @@unique([accountId, idempotencyKey])
   @@index([accountId, status])
   @@index([instrumentId])
 }

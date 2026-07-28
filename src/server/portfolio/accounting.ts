@@ -26,18 +26,22 @@ export async function applyExecutionToPortfolio(
   },
 ) {
   const { accountId, instrumentId, side, quantity, price, fee } = params;
-  const account = await tx.account.findUniqueOrThrow({ where: { id: accountId } });
   const position = await tx.position.findUnique({ where: { accountId_instrumentId: { accountId, instrumentId } } });
 
   if (side === "BUY") {
     const cost = quantity * price + fee;
     if (!position || Number(position.quantity) === 0) {
+      // Re-opening a fully-closed position reuses the same row (one row per
+      // account+instrument), so realizedPnl must reset to 0 here - otherwise
+      // P&L from the previous, already-closed holding period would keep
+      // accumulating into the new position's realizedPnl.
       await tx.position.upsert({
         where: { accountId_instrumentId: { accountId, instrumentId } },
         update: {
           side: "LONG",
           quantity,
           avgEntryPrice: price,
+          realizedPnl: 0,
           closedAt: null,
           openedAt: new Date(),
         },
@@ -53,12 +57,18 @@ export async function applyExecutionToPortfolio(
         data: { quantity: newQty, avgEntryPrice: newAvg },
       });
     }
+    // Atomic decrement, not a read-then-write of the cash figure already
+    // fetched above - two fills on the same account racing through this
+    // function concurrently would otherwise both compute from the same
+    // stale cash value and the second write would silently clobber the
+    // first's deduction (a lost update).
+    const debited = await tx.account.update({
+      where: { id: accountId },
+      data: { cash: { decrement: cost } },
+    });
     await tx.account.update({
       where: { id: accountId },
-      data: {
-        cash: Number(account.cash) - cost,
-        buyingPower: (Number(account.cash) - cost) * BUYING_POWER_MULTIPLIER,
-      },
+      data: { buyingPower: Number(debited.cash) * BUYING_POWER_MULTIPLIER },
     });
   } else {
     if (!position || Number(position.quantity) < quantity) {
@@ -78,12 +88,14 @@ export async function applyExecutionToPortfolio(
         closedAt: remainingQty === 0 ? new Date() : null,
       },
     });
+    // Same atomic-increment reasoning as the BUY branch above.
+    const credited = await tx.account.update({
+      where: { id: accountId },
+      data: { cash: { increment: proceeds } },
+    });
     await tx.account.update({
       where: { id: accountId },
-      data: {
-        cash: Number(account.cash) + proceeds,
-        buyingPower: (Number(account.cash) + proceeds) * BUYING_POWER_MULTIPLIER,
-      },
+      data: { buyingPower: Number(credited.cash) * BUYING_POWER_MULTIPLIER },
     });
   }
 }

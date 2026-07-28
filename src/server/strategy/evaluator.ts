@@ -30,12 +30,14 @@ function evaluateCondition(condition: Condition, bars: StrategyBar[], index: num
     case "price_below":
       return bar.close < condition.value;
     case "pct_change_above": {
-      const sessionOpen = bars[0]!.open;
-      return ((bar.close - sessionOpen) / sessionOpen) * 100 > condition.value;
+      // Change relative to this bar's own open (this day's change), not the
+      // first bar of the whole data window - otherwise a multi-day backtest
+      // or the live runner's rolling window would measure cumulative drift
+      // since the window started rather than a per-bar change.
+      return ((bar.close - bar.open) / bar.open) * 100 > condition.value;
     }
     case "pct_change_below": {
-      const sessionOpen = bars[0]!.open;
-      return ((bar.close - sessionOpen) / sessionOpen) * 100 < condition.value;
+      return ((bar.close - bar.open) / bar.open) * 100 < condition.value;
     }
     case "sma_cross_above": {
       const values = sma(closes, condition.period);

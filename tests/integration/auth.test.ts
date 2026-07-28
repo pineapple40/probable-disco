@@ -4,9 +4,14 @@ import { prisma } from "@/lib/db";
 import {
   registerUser,
   login,
+  resetPassword,
+  bootstrapTraderResources,
   AuthError,
   MAX_FAILED_LOGINS,
 } from "@/server/auth/service";
+import { beginMfaEnrollment, confirmMfaEnrollment, MfaAlreadyEnabledError } from "@/server/auth/mfa";
+import { generate } from "otplib";
+import { generateToken, hashToken } from "@/lib/crypto";
 
 const createdUserEmails: string[] = [];
 
@@ -90,5 +95,76 @@ describe("registerUser + login (integration)", () => {
     const user = await prisma.user.findUniqueOrThrow({ where: { email } });
     expect(user.failedLoginCount).toBe(0);
     expect(user.lockedUntil).toBeNull();
+  });
+});
+
+describe("MFA enrollment (integration)", () => {
+  it("rejects re-enrollment once MFA is already enabled, without touching the active config", async () => {
+    const email = uniqueEmail();
+    await registerUser({ email, password: "Str0ng!Passw0rd", displayName: "Test" }, {});
+    const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+
+    const { secret } = await beginMfaEnrollment(user.id, email);
+    const code = await generate({ secret });
+    await confirmMfaEnrollment(user.id, code);
+
+    const activeConfig = await prisma.mfaConfig.findUniqueOrThrow({ where: { userId: user.id } });
+    expect(activeConfig.enabled).toBe(true);
+
+    // Calling beginMfaEnrollment again (e.g. a hijacked session replaying the
+    // enroll endpoint) must not silently disable or replace the active MFA
+    // secret.
+    await expect(beginMfaEnrollment(user.id, email)).rejects.toThrow(MfaAlreadyEnabledError);
+
+    const unchangedConfig = await prisma.mfaConfig.findUniqueOrThrow({ where: { userId: user.id } });
+    expect(unchangedConfig.enabled).toBe(true);
+    expect(unchangedConfig.secret).toBe(activeConfig.secret);
+  });
+});
+
+describe("resetPassword (integration)", () => {
+  it("invalidates other outstanding reset tokens once one is redeemed", async () => {
+    const email = uniqueEmail();
+    await registerUser({ email, password: "Str0ng!Passw0rd", displayName: "Test" }, {});
+    const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+
+    // Two outstanding tokens, e.g. from two separate "forgot password"
+    // requests (or one intercepted from an earlier email).
+    const tokenOld = generateToken(32);
+    const tokenNew = generateToken(32);
+    await prisma.passwordResetToken.create({
+      data: { userId: user.id, tokenHash: hashToken(tokenOld), expiresAt: new Date(Date.now() + 60 * 60 * 1000) },
+    });
+    await prisma.passwordResetToken.create({
+      data: { userId: user.id, tokenHash: hashToken(tokenNew), expiresAt: new Date(Date.now() + 60 * 60 * 1000) },
+    });
+
+    await resetPassword(tokenNew, "NewStr0ng!Passw0rd");
+
+    // The older, still-unused token must no longer be redeemable.
+    await expect(resetPassword(tokenOld, "AnotherStr0ng!Passw0rd")).rejects.toThrow(AuthError);
+  });
+});
+
+describe("bootstrapTraderResources (integration)", () => {
+  it("rolls back every resource it created if a later step in the bootstrap fails", async () => {
+    const email = uniqueEmail();
+    await registerUser({ email, password: "Str0ng!Passw0rd", displayName: "Test" }, {});
+    const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+
+    // This user already has a full set of bootstrap resources, including a
+    // RiskProfile (unique on userId). Re-running the bootstrap for the same
+    // userId must fail partway through, at the RiskProfile step.
+    await expect(prisma.$transaction((tx) => bootstrapTraderResources(tx, user.id))).rejects.toThrow();
+
+    // If the earlier steps (broker connection, market data connection,
+    // account, watchlist) weren't rolled back along with the failed step,
+    // this user would now have a second, orphaned copy of each.
+    const brokerConnections = await prisma.brokerConnection.findMany({ where: { userId: user.id } });
+    expect(brokerConnections).toHaveLength(1);
+    const accounts = await prisma.account.findMany({ where: { userId: user.id } });
+    expect(accounts).toHaveLength(1);
+    const watchlists = await prisma.watchlist.findMany({ where: { userId: user.id } });
+    expect(watchlists).toHaveLength(1);
   });
 });

@@ -120,21 +120,23 @@ export function runBacktest(
       }
     }
 
-    // 3. Queue entries for flat symbols under position/day-trade caps. Track a
-    // projected open-position count so multiple symbols signaling in the same
-    // tick can't collectively queue more entries than maxPositions allows.
+    // 3. Queue entries for flat symbols under position/day-trade caps. Track
+    // projected open-position and daily-trade counts so multiple symbols
+    // signaling in the same tick can't collectively exceed maxPositions or
+    // maxTradesPerDay.
     const dateKey = dataBySymbol[symbols[0]!]![i]!.ts.toISOString().slice(0, 10);
-    const todayCount = tradesToday.get(dateKey) ?? 0;
     const pendingEntryCount = pendingSignals.filter((s) => s.action === "enter").length;
     let projectedOpenCount = openPositions.size + pendingEntryCount;
+    let projectedTodayCount = (tradesToday.get(dateKey) ?? 0) + pendingEntryCount;
     for (const symbol of symbols) {
       if (openPositions.has(symbol)) continue;
       if (projectedOpenCount >= settings.maxPositions) continue;
-      if (todayCount >= definition.maxTradesPerDay) continue;
+      if (projectedTodayCount >= definition.maxTradesPerDay) continue;
       const bars = dataBySymbol[symbol]!;
       if (evaluateEntry(definition, bars, i)) {
         pendingSignals.push({ symbol, action: "enter" });
         projectedOpenCount++;
+        projectedTodayCount++;
       }
     }
 

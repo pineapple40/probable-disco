@@ -57,6 +57,19 @@ describe("evaluateEntry", () => {
     expect(evaluateEntry(definition, bars, 4)).toBe(true);
   });
 
+  it("evaluates pct_change relative to the current bar's own open, not the window's first bar", () => {
+    // A big first-day move (bar 0) must not leak into later bars' pct-change
+    // evaluation - each bar's change is measured against its own open.
+    const bars: StrategyBar[] = [
+      { ts: new Date("2024-01-02T00:00:00.000Z"), open: 100, high: 130, low: 100, close: 130, volume: 1 },
+      { ts: new Date("2024-01-03T00:00:00.000Z"), open: 130, high: 130, low: 129, close: 129.9, volume: 1 },
+    ];
+    const definition = baseDefinition({ entryRules: [{ type: "pct_change_above", value: 5 }] });
+    // Bar 1's own change (129 -> 129.9) is under 1%, even though cumulative
+    // change since bar 0's open (100 -> 129.9) is ~30%.
+    expect(evaluateEntry(definition, bars, 1)).toBe(false);
+  });
+
   it("evaluates time-of-day conditions from bar timestamps", () => {
     const bars: StrategyBar[] = [
       { ts: new Date("2024-01-02T14:00:00.000Z"), open: 1, high: 1, low: 1, close: 1, volume: 1 },

@@ -32,7 +32,12 @@ export async function runAndStoreBacktest(userId: string, input: RunBacktestInpu
 
   const backtest = await prisma.backtest.create({
     data: {
-      strategyId: input.strategyId,
+      // Derived from the already-ownership-checked strategyVersion, not the
+      // client-supplied input.strategyId - otherwise a caller could pass a
+      // strategyVersionId they own alongside an unrelated (or another
+      // user's) strategyId, creating a Backtest row that misattributes whose
+      // strategy it belongs to.
+      strategyId: strategyVersion.strategyId,
       strategyVersionId: input.strategyVersionId,
       symbols: input.symbols,
       startDate: input.startDate,

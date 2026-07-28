@@ -19,13 +19,18 @@ async function getPrimaryAccount(userId: string) {
 }
 
 export async function placeOrder(userId: string, input: PlaceOrderRequest) {
+  const account = await getPrimaryAccount(userId);
+
+  // Scoped to this account, not globally unique - an idempotency key is only
+  // meant to dedupe retries from the same client/account. A global lookup
+  // would let one account's request "replay" into and return another
+  // account's unrelated order if the key strings ever collided.
   const existing = await prisma.order.findUnique({
-    where: { idempotencyKey: input.idempotencyKey },
+    where: { accountId_idempotencyKey: { accountId: account.id, idempotencyKey: input.idempotencyKey } },
     include: { executions: true, events: true },
   });
   if (existing) return { order: existing, replayed: true, riskDecision: null };
 
-  const account = await getPrimaryAccount(userId);
   const instrument = await prisma.instrument.findUnique({ where: { symbol: input.symbol.toUpperCase() } });
   if (!instrument || !instrument.isTradable) {
     throw new OrderValidationError(`${input.symbol} is not a tradable instrument.`);

@@ -53,7 +53,11 @@ export async function addSymbolToWatchlist(userId: string, watchlistId: string, 
 export async function removeSymbolFromWatchlist(userId: string, watchlistId: string, symbolEntryId: string) {
   const watchlist = await prisma.watchlist.findUnique({ where: { id: watchlistId } });
   if (!watchlist || watchlist.userId !== userId) throw new Error("Watchlist not found.");
-  await prisma.watchlistSymbol.delete({ where: { id: symbolEntryId } });
+  // Scope the delete to this watchlist, not just the caller-owned watchlistId
+  // above - otherwise a user could pass another user's symbolEntryId (from a
+  // watchlist they don't own) and delete it, an IDOR via the id alone.
+  const { count } = await prisma.watchlistSymbol.deleteMany({ where: { id: symbolEntryId, watchlistId } });
+  if (count === 0) throw new Error("Watchlist symbol not found.");
   await recordAuditEvent({
     userId,
     category: "data",
