@@ -63,8 +63,17 @@ test.describe("critical trading workflows", () => {
     await page.click('button:has-text("Buy NVDA")');
     await expect(page.locator("strong", { hasText: "NEW" })).toBeVisible({ timeout: 10_000 });
 
-    await expect(page.getByText(/NVDA LIMIT/).first()).toBeVisible({ timeout: 10_000 });
-    await page.click('button:has-text("Cancel")');
-    await expect(page.getByRole("button", { name: "Cancel" })).toHaveCount(0, { timeout: 10_000 });
+    // Scope the cancel to this specific NVDA LIMIT order's row (the leaf row
+    // element in the "Open orders" list, identified by its own classes - not
+    // an ancestor `has`/`hasText` combinator, which would keep matching a
+    // broader wrapper via the unrelated "Recent orders" list below once this
+    // row is gone). A filled buy with a stop-loss now creates its own
+    // resting protective stop order (a real bracket leg), which is also
+    // cancelable, so asserting on a page-wide "Cancel" button count would be
+    // flaky depending on what other tests ran first.
+    const row = page.locator("div.flex.items-center.justify-between.rounded-md", { hasText: /NVDA LIMIT/ });
+    await expect(row).toBeVisible({ timeout: 10_000 });
+    await row.getByRole("button", { name: "Cancel" }).click();
+    await expect(row).not.toBeVisible({ timeout: 10_000 });
   });
 });
