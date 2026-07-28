@@ -1,4 +1,3 @@
-import "server-only";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";

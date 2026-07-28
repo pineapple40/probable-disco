@@ -1,4 +1,3 @@
-import "server-only";
 import { prisma } from "@/lib/db";
 import { recordAuditEvent } from "@/server/audit/log";
 import { validateStrategyDefinition, type StrategyDefinition } from "@/server/strategy/types";
@@ -75,14 +74,39 @@ export async function setStrategyStatus(
   });
   if (!strategy || strategy.userId !== userId) throw new Error("Strategy not found.");
 
-  if (status === "ACTIVE") {
-    const latest = strategy.versions[0];
-    if (!latest?.isValid) {
-      throw new Error("Cannot activate an invalid strategy. Fix validation errors first.");
-    }
+  const latest = strategy.versions[0];
+  if (status === "ACTIVE" && !latest?.isValid) {
+    throw new Error("Cannot activate an invalid strategy. Fix validation errors first.");
   }
 
   const updated = await prisma.strategy.update({ where: { id: strategyId }, data: { status } });
+
+  if (status === "ACTIVE" && latest) {
+    const account = await prisma.account.findFirst({ where: { userId } });
+    if (account) {
+      const existingRun = await prisma.strategyRun.findFirst({
+        where: { strategyId, status: "running" },
+      });
+      if (!existingRun) {
+        await prisma.strategyRun.create({
+          data: {
+            strategyId,
+            strategyVersionId: latest.id,
+            accountId: account.id,
+            status: "running",
+            state: { openSymbols: [] },
+            lastHeartbeatAt: new Date(),
+          },
+        });
+      }
+    }
+  } else {
+    await prisma.strategyRun.updateMany({
+      where: { strategyId, status: "running" },
+      data: { status: "stopped", stoppedAt: new Date() },
+    });
+  }
+
   await recordAuditEvent({
     userId,
     category: "strategy",

@@ -1,4 +1,3 @@
-import "server-only";
 import type { Order, Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { getMarketDataProvider } from "@/server/market-data/provider";

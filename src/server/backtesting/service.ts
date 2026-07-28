@@ -1,4 +1,3 @@
-import "server-only";
 import { prisma } from "@/lib/db";
 import { getMarketDataProvider } from "@/server/market-data/provider";
 import type { StrategyBar } from "@/server/strategy/evaluator";

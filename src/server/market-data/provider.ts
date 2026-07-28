@@ -1,4 +1,3 @@
-import "server-only";
 import type { CandleTimeframe } from "@/generated/prisma/client";
 import { env } from "@/lib/env";
 import { getLiveQuote, type LiveQuote } from "@/server/market-data/quote";

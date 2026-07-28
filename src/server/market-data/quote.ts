@@ -1,4 +1,3 @@
-import "server-only";
 import { getLatestDailyCandle } from "@/server/market-data/candles";
 import { generateIntradayCandlesForDay } from "@/server/market-data/simulate";
 import { getMarketSessionStatus, startOfUtcDay, SESSION_MINUTES } from "@/server/market-data/calendar";

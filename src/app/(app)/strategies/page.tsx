@@ -10,6 +10,15 @@ import { Select } from "@/components/ui/select";
 import { ConditionEditor, conditionToPayload, type ConditionDraft } from "@/components/trading/condition-editor";
 import { getJson, postJson, ApiError } from "@/lib/api-client";
 
+interface StrategyRun {
+  id: string;
+  strategyName: string;
+  status: string;
+  lastHeartbeatAt: string | null;
+  startedAt: string;
+  logs: Array<{ level: string; message: string; createdAt: string }>;
+}
+
 interface StrategyVersion {
   id: string;
   version: number;
@@ -70,6 +79,20 @@ export default function StrategiesPage() {
       postJson(`/api/strategies/${id}/status`, { status }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["strategies"] }),
     onError: (err) => setError(err instanceof ApiError ? err.message : "Failed to update status."),
+  });
+
+  const { data: runs } = useQuery({
+    queryKey: ["strategy-runs"],
+    queryFn: () => getJson<StrategyRun[]>("/api/strategy-runs"),
+    refetchInterval: 15000,
+  });
+
+  const stopRun = useMutation({
+    mutationFn: (id: string) => postJson(`/api/strategy-runs/${id}/stop`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["strategy-runs"] });
+      queryClient.invalidateQueries({ queryKey: ["strategies"] });
+    },
   });
 
   return (
@@ -213,6 +236,63 @@ export default function StrategiesPage() {
           })}
         </div>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Live paper strategy runs</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="mb-2 text-xs text-slate-500">
+            A background worker (<code>npm run worker</code>) evaluates active strategies against
+            daily simulated bars and places paper orders through the same risk-checked order
+            pipeline as manual trading.
+          </p>
+          {!runs || runs.length === 0 ? (
+            <p className="text-sm text-slate-500">No strategy runs yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {runs.map((r) => (
+                <div key={r.id} className="rounded-md bg-slate-800/50 p-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">
+                      {r.strategyName}{" "}
+                      <span
+                        className={
+                          r.status === "running"
+                            ? "text-green-400"
+                            : r.status === "error"
+                              ? "text-red-400"
+                              : "text-slate-400"
+                        }
+                      >
+                        ({r.status})
+                      </span>
+                    </p>
+                    {r.status === "running" && (
+                      <Button size="sm" variant="destructive" onClick={() => stopRun.mutate(r.id)}>
+                        Kill switch
+                      </Button>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Started {new Date(r.startedAt).toLocaleString()}
+                    {r.lastHeartbeatAt ? ` · heartbeat ${new Date(r.lastHeartbeatAt).toLocaleTimeString()}` : ""}
+                  </p>
+                  {r.logs.length > 0 && (
+                    <ul className="mt-1 space-y-0.5 text-xs text-slate-400">
+                      {r.logs.slice(0, 3).map((l, i) => (
+                        <li key={i} className={l.level === "error" ? "text-red-400" : ""}>
+                          {new Date(l.createdAt).toLocaleTimeString()} — {l.message}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

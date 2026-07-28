@@ -1,4 +1,3 @@
-import "server-only";
 import { prisma } from "@/lib/db";
 import type { CandleTimeframe } from "@/generated/prisma/client";
 import { generateDailyCandles, generateIntradayCandlesForDay, type SimCandle } from "@/server/market-data/simulate";

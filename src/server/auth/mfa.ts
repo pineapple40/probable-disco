@@ -1,4 +1,3 @@
-import "server-only";
 import { generateSecret, generateURI, verify } from "otplib";
 import QRCode from "qrcode";
 import { randomBytes, createHash } from "crypto";
