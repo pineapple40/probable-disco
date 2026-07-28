@@ -44,3 +44,4 @@ redis-data/
 .vscode/*
 !.vscode/extensions.json
 .idea/
+tests/e2e/.auth/

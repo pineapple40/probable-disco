@@ -66,7 +66,11 @@ export function runBacktest(
     for (const signal of pendingSignals) {
       const bars = dataBySymbol[signal.symbol]!;
       const bar = bars[i]!;
-      if (signal.action === "enter" && !openPositions.has(signal.symbol)) {
+      if (
+        signal.action === "enter" &&
+        !openPositions.has(signal.symbol) &&
+        openPositions.size < settings.maxPositions
+      ) {
         const fillPrice = buyFillPrice(bar.open, settings);
         const quantity = sizePosition(definition, cash, fillPrice);
         const cost = quantity * fillPrice + settings.commissionPerTrade;
@@ -116,16 +120,21 @@ export function runBacktest(
       }
     }
 
-    // 3. Queue entries for flat symbols under position/day-trade caps.
+    // 3. Queue entries for flat symbols under position/day-trade caps. Track a
+    // projected open-position count so multiple symbols signaling in the same
+    // tick can't collectively queue more entries than maxPositions allows.
     const dateKey = dataBySymbol[symbols[0]!]![i]!.ts.toISOString().slice(0, 10);
     const todayCount = tradesToday.get(dateKey) ?? 0;
+    const pendingEntryCount = pendingSignals.filter((s) => s.action === "enter").length;
+    let projectedOpenCount = openPositions.size + pendingEntryCount;
     for (const symbol of symbols) {
       if (openPositions.has(symbol)) continue;
-      if (openPositions.size >= settings.maxPositions) continue;
+      if (projectedOpenCount >= settings.maxPositions) continue;
       if (todayCount >= definition.maxTradesPerDay) continue;
       const bars = dataBySymbol[symbol]!;
       if (evaluateEntry(definition, bars, i)) {
         pendingSignals.push({ symbol, action: "enter" });
+        projectedOpenCount++;
       }
     }
 

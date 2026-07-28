@@ -32,7 +32,7 @@ const envSchema = z.object({
   SMTP_PASSWORD: z.string().optional().default(""),
   SMTP_FROM: z.string().optional().default("Probable Disco <no-reply@example.com>"),
 
-  LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
+  LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
 });
 
 export type Env = z.infer<typeof envSchema>;

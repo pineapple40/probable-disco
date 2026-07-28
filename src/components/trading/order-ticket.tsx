@@ -95,15 +95,15 @@ export function OrderTicket({ defaultSymbol = "AAPL" }: { defaultSymbol?: string
 
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <Label>Side</Label>
-          <Select value={side} onChange={(e) => setSide(e.target.value as Side)}>
+          <Label htmlFor="ticket-side">Side</Label>
+          <Select id="ticket-side" value={side} onChange={(e) => setSide(e.target.value as Side)}>
             <option value="BUY">Buy</option>
             <option value="SELL">Sell</option>
           </Select>
         </div>
         <div>
-          <Label>Type</Label>
-          <Select value={type} onChange={(e) => setType(e.target.value as OrderType)}>
+          <Label htmlFor="ticket-type">Type</Label>
+          <Select id="ticket-type" value={type} onChange={(e) => setType(e.target.value as OrderType)}>
             <option value="MARKET">Market</option>
             <option value="LIMIT">Limit</option>
             <option value="STOP">Stop</option>
