@@ -4,6 +4,7 @@ import { buildRiskCheckContext } from "@/server/risk/context";
 import { evaluateOrderRisk } from "@/server/risk/engine";
 import { attemptImmediateFill, cancelOrder as cancelOrderInBroker } from "@/server/broker/simulated";
 import { recordAuditEvent } from "@/server/audit/log";
+import { createNotificationDeduped } from "@/server/alerts/service";
 
 export class OrderValidationError extends Error {
   constructor(message: string) {
@@ -112,6 +113,26 @@ export async function placeOrder(userId: string, input: PlaceOrderRequest) {
     include: { executions: true, events: { orderBy: { createdAt: "asc" } }, instrument: true },
   });
 
+  if (final.status === "FILLED") {
+    await createNotificationDeduped({
+      userId,
+      category: "order",
+      title: `${final.side} ${instrument.symbol} filled`,
+      body: `${final.quantity} shares of ${instrument.symbol} filled.`,
+      dedupeKey: `order:${final.id}:filled`,
+      cooldownMinutes: 0,
+    });
+  } else if (final.status === "REJECTED") {
+    await createNotificationDeduped({
+      userId,
+      category: "risk",
+      title: `${final.side} ${instrument.symbol} rejected`,
+      body: final.rejectReason ?? "Order rejected by risk engine.",
+      dedupeKey: `order:${final.id}:rejected`,
+      cooldownMinutes: 0,
+    });
+  }
+
   return { order: final, replayed: false, riskDecision: decision };
 }
 
@@ -132,7 +153,8 @@ export async function cancelOrder(userId: string, orderId: string) {
 }
 
 export async function listOrders(userId: string) {
-  const account = await getPrimaryAccount(userId);
+  const account = await prisma.account.findFirst({ where: { userId }, orderBy: { createdAt: "asc" } });
+  if (!account) return [];
   return prisma.order.findMany({
     where: { accountId: account.id },
     include: { instrument: true, executions: true },

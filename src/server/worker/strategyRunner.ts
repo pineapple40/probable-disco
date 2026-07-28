@@ -5,6 +5,7 @@ import { evaluateEntry, evaluateExit, type StrategyBar } from "@/server/strategy
 import type { StrategyDefinition } from "@/server/strategy/types";
 import { placeOrder } from "@/server/orders/service";
 import { recordAuditEvent } from "@/server/audit/log";
+import { createNotificationDeduped } from "@/server/alerts/service";
 
 const WARMUP_DAYS = 90;
 const MAX_CONSECUTIVE_ERRORS = 5;
@@ -172,6 +173,14 @@ async function tickRun(run: {
       category: "strategy",
       action: "strategy_run_auto_paused",
       targetId: run.id,
+    });
+    await createNotificationDeduped({
+      userId: account.userId,
+      category: "strategy",
+      title: "Strategy run auto-paused",
+      body: `A strategy run hit repeated errors and was automatically paused for safety.`,
+      dedupeKey: `strategy_run:${run.id}:auto_paused`,
+      cooldownMinutes: 60,
     });
   }
 }

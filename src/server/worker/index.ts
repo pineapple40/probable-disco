@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { logger } from "@/lib/logger";
 import { tickStrategyRuns } from "@/server/worker/strategyRunner";
+import { evaluateAlerts } from "@/server/alerts/evaluator";
 
 const TICK_INTERVAL_MS = 60_000;
 let stopping = false;
@@ -13,17 +14,24 @@ async function tick() {
   } catch (err) {
     logger.error({ err }, "Strategy runner tick failed");
   }
+
+  try {
+    const { triggered } = await evaluateAlerts();
+    if (triggered > 0) logger.info({ triggered }, "Alert evaluation tick complete");
+  } catch (err) {
+    logger.error({ err }, "Alert evaluation tick failed");
+  }
 }
 
 async function main() {
-  logger.info({ intervalMs: TICK_INTERVAL_MS }, "Paper strategy runner worker starting");
+  logger.info({ intervalMs: TICK_INTERVAL_MS }, "Background worker starting (strategy runner + alerts)");
   await tick();
   const interval = setInterval(tick, TICK_INTERVAL_MS);
 
   const shutdown = () => {
     stopping = true;
     clearInterval(interval);
-    logger.info("Paper strategy runner worker stopped");
+    logger.info("Background worker stopped");
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
@@ -31,6 +39,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  logger.error({ err }, "Paper strategy runner worker crashed");
+  logger.error({ err }, "Background worker crashed");
   process.exit(1);
 });
