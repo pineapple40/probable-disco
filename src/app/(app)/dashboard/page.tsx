@@ -4,10 +4,12 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { OrderTicket } from "@/components/trading/order-ticket";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAccount } from "@/hooks/useAccount";
 import { usePositions } from "@/hooks/usePositions";
 import { useOrders, useCancelOrder } from "@/hooks/useOrders";
 import { formatCurrency, formatPercent } from "@/lib/format";
+import { postJson } from "@/lib/api-client";
 
 function PnlText({ value }: { value: number }) {
   return (
@@ -23,13 +25,30 @@ export default function DashboardPage() {
   const { data: positions, isLoading: positionsLoading } = usePositions();
   const { data: orders, isLoading: ordersLoading } = useOrders();
   const cancelOrder = useCancelOrder();
+  const queryClient = useQueryClient();
 
   const openOrders = orders?.filter((o) => o.status === "NEW" || o.status === "PENDING_NEW") ?? [];
   const recentOrders = orders?.slice(0, 8) ?? [];
 
+  async function toggleEmergencyLock(locked: boolean) {
+    await postJson("/api/accounts/emergency-lock", { locked });
+    await queryClient.invalidateQueries({ queryKey: ["account"] });
+  }
+
   return (
     <div className="space-y-4">
-      <h1 className="text-lg font-semibold">Dashboard</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold">Dashboard</h1>
+        {account && (
+          <Button
+            size="sm"
+            variant={account.isTradingLocked ? "outline" : "destructive"}
+            onClick={() => toggleEmergencyLock(!account.isTradingLocked)}
+          >
+            {account.isTradingLocked ? "Release emergency lock" : "Emergency stop trading"}
+          </Button>
+        )}
+      </div>
 
       {account?.isTradingLocked && (
         <div className="rounded-md border border-red-800 bg-red-950/50 p-3 text-sm text-red-300">
