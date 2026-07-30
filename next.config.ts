@@ -3,6 +3,13 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   output: "standalone",
   reactStrictMode: true,
+  // Lets dev mode be reached over a LAN/VM network address (not just
+  // localhost) - e.g. a phone or VM accessing the dev server by its
+  // network IP. Configured per-developer via env var since the address
+  // varies by machine/network; has no effect in production builds.
+  allowedDevOrigins: process.env.NEXT_DEV_ALLOWED_ORIGINS
+    ? process.env.NEXT_DEV_ALLOWED_ORIGINS.split(",").map((origin) => origin.trim())
+    : undefined,
   typescript: {
     ignoreBuildErrors: false,
   },
