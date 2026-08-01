@@ -32,11 +32,12 @@ const envSchema = z.object({
   FEATURE_MFA_ENABLED: booleanFlag(true),
   FEATURE_SIGNUP_ENABLED: booleanFlag(true),
 
-  MARKET_DATA_PROVIDER: z.enum(["simulated"]).default("simulated"),
+  MARKET_DATA_PROVIDER: z.enum(["simulated", "alpaca"]).default("simulated"),
   BROKER_PROVIDER: z.enum(["simulated", "alpaca"]).default("simulated"),
   ALPACA_API_KEY: z.string().optional().default(""),
   ALPACA_API_SECRET: z.string().optional().default(""),
   ALPACA_PAPER_BASE_URL: z.string().optional().default("https://paper-api.alpaca.markets"),
+  ALPACA_DATA_BASE_URL: z.string().optional().default("https://data.alpaca.markets"),
 
   SMTP_HOST: z.string().optional().default(""),
   SMTP_PORT: z.string().optional().default(""),
@@ -52,6 +53,17 @@ const envSchema = z.object({
   // N means the app is reachable only through N trusted proxy hops, so the
   // real client IP is the Nth entry from the right of the header.
   TRUSTED_PROXY_COUNT: z.coerce.number().int().min(0).default(0),
+}).superRefine((data, ctx) => {
+  // Alpaca is opt-in per env var; only require its credentials when a
+  // provider actually selects it, so the simulated-only default install
+  // never needs an Alpaca account.
+  const needsAlpaca = data.BROKER_PROVIDER === "alpaca" || data.MARKET_DATA_PROVIDER === "alpaca";
+  if (needsAlpaca && !data.ALPACA_API_KEY) {
+    ctx.addIssue({ code: "custom", path: ["ALPACA_API_KEY"], message: "ALPACA_API_KEY is required when BROKER_PROVIDER or MARKET_DATA_PROVIDER is \"alpaca\"." });
+  }
+  if (needsAlpaca && !data.ALPACA_API_SECRET) {
+    ctx.addIssue({ code: "custom", path: ["ALPACA_API_SECRET"], message: "ALPACA_API_SECRET is required when BROKER_PROVIDER or MARKET_DATA_PROVIDER is \"alpaca\"." });
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;

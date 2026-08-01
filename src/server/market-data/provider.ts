@@ -2,6 +2,7 @@ import type { CandleTimeframe } from "@/generated/prisma/client";
 import { env } from "@/lib/env";
 import { getLiveQuote, type LiveQuote } from "@/server/market-data/quote";
 import { getCandles } from "@/server/market-data/candles";
+import { AlpacaMarketDataProvider } from "@/server/market-data/alpaca";
 
 /**
  * Provider-neutral market-data interface. Real providers (a licensed
@@ -47,6 +48,9 @@ export function getMarketDataProvider(): MarketDataProvider {
   switch (env.MARKET_DATA_PROVIDER) {
     case "simulated":
       cachedProvider = new SimulatedMarketDataProvider();
+      return cachedProvider;
+    case "alpaca":
+      cachedProvider = new AlpacaMarketDataProvider();
       return cachedProvider;
     default:
       // Real providers (e.g. a licensed delayed/real-time feed) plug in here

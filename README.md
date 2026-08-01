@@ -38,9 +38,12 @@ npm run worker
 - **Auth**: registration, email verification, password reset, optional TOTP MFA, account
   lockout, Redis-backed rate limiting, role-based authorization (trader/admin).
 - **Market data**: a deterministic simulated feed (candles + live quotes) behind a
-  provider-neutral interface, so a real (licensed) data provider can be swapped in later.
+  provider-neutral interface, plus an optional real-data provider backed by Alpaca's Market Data
+  API (`MARKET_DATA_PROVIDER=alpaca`, see `docs/ALPACA_SETUP.md`).
 - **Paper broker**: simulated MARKET/LIMIT/STOP/STOP_LIMIT orders, a matching engine for resting
-  orders, idempotent order submission, and long-only position/P&L accounting.
+  orders, idempotent order submission, and long-only position/P&L accounting - plus an optional
+  adapter that routes the same orders to Alpaca's own **paper trading** endpoint instead
+  (`BROKER_PROVIDER=alpaca`; still fake money, real order behavior).
 - **Risk engine**: server-side pre-trade checks (max risk per trade, daily/weekly loss lockout,
   exposure limits, required stop-loss, minimum reward-to-risk, market-hours-only, and more),
   every decision audited.

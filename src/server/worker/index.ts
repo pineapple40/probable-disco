@@ -3,6 +3,8 @@ import { logger } from "@/lib/logger";
 import { tickStrategyRuns } from "@/server/worker/strategyRunner";
 import { evaluateAlerts } from "@/server/alerts/evaluator";
 import { matchOpenOrders } from "@/server/broker/simulated";
+import { isAlpacaBrokerEnabled } from "@/server/broker/alpaca/adapter";
+import { syncAlpacaFills } from "@/server/broker/alpaca/sync";
 
 const TICK_INTERVAL_MS = 60_000;
 let stopping = false;
@@ -10,9 +12,18 @@ let stopping = false;
 async function tick() {
   if (stopping) return;
 
+  // Mutually exclusive: the simulated matching engine must never run
+  // against Alpaca-routed orders (it would "fill" them against fake
+  // quotes), and syncAlpacaFills() only ever reconciles orders that already
+  // carry an externalOrderId, so this branch is a hard switch, not a merge.
   try {
-    const filled = await matchOpenOrders();
-    if (filled > 0) logger.info({ filled }, "Order-matching tick complete");
+    if (isAlpacaBrokerEnabled()) {
+      const synced = await syncAlpacaFills();
+      if (synced > 0) logger.info({ synced }, "Alpaca fill-sync tick complete");
+    } else {
+      const filled = await matchOpenOrders();
+      if (filled > 0) logger.info({ filled }, "Order-matching tick complete");
+    }
   } catch (err) {
     logger.error({ err }, "Order-matching tick failed");
   }

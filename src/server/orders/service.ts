@@ -3,6 +3,8 @@ import type { PlaceOrderRequest } from "@/server/orders/schemas";
 import { buildRiskCheckContext } from "@/server/risk/context";
 import { evaluateOrderRisk } from "@/server/risk/engine";
 import { attemptImmediateFill, cancelOrder as cancelOrderInBroker } from "@/server/broker/simulated";
+import { isAlpacaBrokerEnabled } from "@/server/broker/alpaca/adapter";
+import { submitLocalOrderToAlpaca, cancelAlpacaOrder } from "@/server/broker/alpaca/orchestration";
 import { recordAuditEvent } from "@/server/audit/log";
 import { createNotificationDeduped } from "@/server/alerts/service";
 
@@ -110,7 +112,11 @@ export async function placeOrder(userId: string, input: PlaceOrderRequest) {
   });
 
   if (decision.allowed) {
-    await attemptImmediateFill(order.id);
+    if (isAlpacaBrokerEnabled()) {
+      await submitLocalOrderToAlpaca(order.id);
+    } else {
+      await attemptImmediateFill(order.id);
+    }
   }
 
   const final = await prisma.order.findUniqueOrThrow({
@@ -146,7 +152,9 @@ export async function cancelOrder(userId: string, orderId: string) {
   if (!order || order.account.userId !== userId) {
     throw new OrderValidationError("Order not found.");
   }
-  const updated = await cancelOrderInBroker(orderId);
+  const updated = order.externalOrderId
+    ? await cancelAlpacaOrder(orderId, order.externalOrderId)
+    : await cancelOrderInBroker(orderId);
   await recordAuditEvent({
     userId,
     category: "order",

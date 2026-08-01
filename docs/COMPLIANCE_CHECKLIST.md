@@ -20,22 +20,34 @@ connections, or real user funds. Every item below is currently **unresolved** un
 
 ## Broker API terms
 
-- **Not applicable today** - the only broker adapter implemented is the simulated one. An Alpaca
-  (or other) paper-broker adapter is explicitly out of scope for this pass (see
-  PROJECT_STATUS.md); before adding one, review:
-  - [ ] The broker's API Terms of Service, including any restrictions on automated trading,
-        rate limits, and required disclosures to end users.
-  - [ ] Whether the broker requires a signed agreement before production API access.
-  - [ ] Whether the broker's paper-trading environment has its own separate terms.
+- An Alpaca paper-broker adapter now exists (`src/server/broker/alpaca/`, opt-in via
+  `BROKER_PROVIDER=alpaca`, see `docs/ALPACA_SETUP.md`), routing orders only to Alpaca's own
+  **paper trading** endpoint - never their live endpoint. It remains the operator's (not this
+  app's) responsibility to have their own Alpaca account/agreement in place:
+  - [ ] The operator has read Alpaca's API Terms of Service, including any restrictions on
+        automated trading, rate limits, and required disclosures to end users. (Between the
+        operator and Alpaca - not something this codebase can satisfy on your behalf.)
+  - [x] No signed agreement is required for paper-trading API access today (per Alpaca's own
+        published terms as of this writing) - reconfirm before relying on this if it matters to
+        your use case, since a vendor's terms can change.
+  - [x] Alpaca's paper-trading environment operates under its own terms, separate from live
+        trading - reviewed as part of building this adapter.
+  - [ ] Still unresolved, and required before ever enabling a **live** (non-paper) Alpaca
+        connection: a signed live-trading agreement with Alpaca, and everything in the
+        "Live-trading enablement checklist" below.
 
 ## Market-data licensing
 
-- **Not applicable today** - only simulated, clearly-labeled mock data is used; no real market
-  data is fetched, displayed, or redistributed anywhere in the app.
-- Before adding a real (even delayed) market-data provider:
-  - [ ] Review the provider's redistribution/display terms (e.g. exchange-required attribution,
-        per-user licensing fees for real-time data, delayed-data disclosure requirements).
-  - [ ] Confirm whether the provider requires an executed data agreement before production use.
+- An Alpaca market-data provider now exists (`src/server/market-data/alpaca.ts`, opt-in via
+  `MARKET_DATA_PROVIDER=alpaca`), using Alpaca's free IEX-feed tier (the same API key/secret used
+  for paper trading).
+  - [x] Alpaca's free IEX-feed tier is documented by Alpaca as usable without a separate data
+        agreement or per-user licensing fee, for the operator's own account's use.
+  - [ ] If this data is ever displayed to *other* users (not just the operator running their own
+        instance), re-review Alpaca's redistribution/display terms for that specific use case -
+        this app's current design assumes a single operator viewing their own account's data, not
+        a multi-tenant redistribution service.
+  - [x] Simulated, clearly-labeled mock data remains the default when this is not opted into.
 
 ## Pattern Day Trader (PDT) / margin rules
 

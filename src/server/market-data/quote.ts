@@ -14,7 +14,7 @@ export interface LiveQuote {
   volume: number;
   changeAbs: number;
   changePct: number;
-  sourceType: "SIMULATED";
+  sourceType: "SIMULATED" | "REALTIME";
   isStale: boolean;
   isMarketOpen: boolean;
   asOf: string;

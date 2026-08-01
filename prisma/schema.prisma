@@ -365,6 +365,10 @@ model Order {
   parentOrderId  String? // for bracket child orders / replaces
   parentOrder    Order?        @relation("OrderReplaces", fields: [parentOrderId], references: [id])
   childOrders    Order[]       @relation("OrderReplaces")
+  // The broker's own order id, set only when this order was submitted to a
+  // real (non-simulated) broker adapter - e.g. Alpaca. Used to poll/reconcile
+  // fills back into this row instead of the local simulated matching engine.
+  externalOrderId String?      @unique
   strategyRunId  String?
   strategyRun    StrategyRun?  @relation(fields: [strategyRunId], references: [id])
   rejectReason   String?

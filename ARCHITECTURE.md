@@ -5,8 +5,13 @@
 Probable Disco is a single Next.js application (App Router) that serves both the UI (React
 Server/Client Components) and the API (Route Handlers under `src/app/api/**`), backed by
 PostgreSQL (via Prisma) and Redis. A separate long-running Node process (`npm run worker`) runs
-the paper strategy runner and alert evaluator on an interval. Everything - market data, the
-broker, order matching - is simulated in-process; nothing here talks to a real exchange.
+the paper strategy runner and alert evaluator on an interval. By default (`BROKER_PROVIDER=simulated`,
+`MARKET_DATA_PROVIDER=simulated`), everything - market data, the broker, order matching - is
+simulated in-process; nothing talks to a real exchange. Setting `BROKER_PROVIDER=alpaca` /
+`MARKET_DATA_PROVIDER=alpaca` instead routes orders and quotes to Alpaca's own **paper trading**
+endpoint (real market data, fake money) - see [docs/ALPACA_SETUP.md](docs/ALPACA_SETUP.md). Real
+(live-money) trading remains hard-disabled either way (`FEATURE_LIVE_TRADING_ENABLED`, see
+SECURITY.md).
 
 ```mermaid
 flowchart LR
@@ -56,8 +61,13 @@ sequenceDiagram
     Risk-->>O: {allowed, ruleKey, message, warnings}
     O->>DB: create Order + RiskEvent + OrderEvent (transaction)
     alt allowed
-        O->>B: attemptImmediateFill(orderId)
-        B->>DB: Execution + Position + Account update (transaction)
+        alt BROKER_PROVIDER=simulated (default)
+            O->>B: attemptImmediateFill(orderId)
+            B->>DB: Execution + Position + Account update (transaction)
+        else BROKER_PROVIDER=alpaca
+            O->>DB: submitLocalOrderToAlpaca(orderId)
+            Note over O,DB: order stays NEW; worker's syncAlpacaFills()<br/>reconciles the real fill later
+        end
     end
     O-->>R: order + riskDecision
     R-->>U: 200/201 JSON
@@ -66,6 +76,23 @@ sequenceDiagram
 The risk engine (`src/server/risk/engine.ts`) is a pure function with no I/O, so it's unit
 tested directly with hand-built contexts (see `tests/unit/risk-engine.test.ts`) - the only I/O
 is in `risk/context.ts`, which assembles its input from the database.
+
+## Broker adapters (simulated vs. Alpaca)
+
+`src/server/broker/types.ts` defines a `BrokerAdapter` interface (`submitOrder`, `cancelOrder`).
+The default `simulated` engine (`src/server/broker/simulated.ts`) fills orders synchronously in the
+same request, matched against the simulated quote engine, and the worker's `matchOpenOrders()` tick
+picks up resting LIMIT/STOP orders as simulated quotes move. The `alpaca` adapter
+(`src/server/broker/alpaca/adapter.ts`) instead only *accepts* the order from Alpaca's paper
+endpoint - stop-loss/take-profit are submitted as a native Alpaca bracket/OTO order, so Alpaca
+itself manages the real protective legs. The worker's `syncAlpacaFills()`
+(`src/server/broker/alpaca/sync.ts`) polls Alpaca for status on every open Alpaca-routed order
+(including its bracket legs, mirrored into local child `Order` rows on first sight) and reconciles
+fills into the exact same `Execution`/`Position`/`Account` accounting the simulated engine uses, so
+the rest of the app (dashboard, journal, analytics, risk engine) never needs to know which engine
+filled a given order. The two engines are mutually exclusive per deployment
+(`BROKER_PROVIDER` is a single global switch) - the worker tick runs one or the other, never both,
+so a real Alpaca position is never "protected" by a fake simulated stop order.
 
 ## Strategy execution: one evaluator, two runners
 
@@ -96,9 +123,13 @@ flowchart TB
 ## Market data
 
 `src/server/market-data/provider.ts` defines a `MarketDataProvider` interface
-(`getQuote`, `getCandles`) with one implementation today, `SimulatedMarketDataProvider`. A real
-(licensed) provider would implement the same interface and be registered in
-`getMarketDataProvider()` - no other code depends on the simulated provider's internals.
+(`getQuote`, `getCandles`) with two implementations: `SimulatedMarketDataProvider` (default) and
+`AlpacaMarketDataProvider` (`src/server/market-data/alpaca.ts`, selected via
+`MARKET_DATA_PROVIDER=alpaca`), which fetches real quotes/bars from Alpaca's Market Data API and
+caches bars into the same `Candle` table tagged `sourceType: REALTIME` (never mixed with the
+simulated engine's `SIMULATED`-tagged rows). Another real (licensed) provider would implement the
+same interface and be registered in `getMarketDataProvider()` - no other code depends on either
+provider's internals.
 
 - **Candles** are a seeded random walk (mulberry32 PRNG + clamped Box-Muller shocks), always
   replayed forward from a fixed epoch, so the same symbol produces the same historical path on
