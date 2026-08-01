@@ -1,0 +1,177 @@
+import { prisma } from "@/lib/db";
+import type { PlaceOrderRequest } from "@/server/orders/schemas";
+import { buildRiskCheckContext } from "@/server/risk/context";
+import { evaluateOrderRisk } from "@/server/risk/engine";
+import { attemptImmediateFill, cancelOrder as cancelOrderInBroker } from "@/server/broker/simulated";
+import { isAlpacaBrokerEnabled } from "@/server/broker/alpaca/adapter";
+import { submitLocalOrderToAlpaca, cancelAlpacaOrder } from "@/server/broker/alpaca/orchestration";
+import { recordAuditEvent } from "@/server/audit/log";
+import { createNotificationDeduped } from "@/server/alerts/service";
+
+export class OrderValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+async function getPrimaryAccount(userId: string) {
+  const account = await prisma.account.findFirst({ where: { userId }, orderBy: { createdAt: "asc" } });
+  if (!account) throw new OrderValidationError("No trading account found for this user.");
+  return account;
+}
+
+export async function placeOrder(userId: string, input: PlaceOrderRequest) {
+  const account = await getPrimaryAccount(userId);
+
+  // Scoped to this account, not globally unique - an idempotency key is only
+  // meant to dedupe retries from the same client/account. A global lookup
+  // would let one account's request "replay" into and return another
+  // account's unrelated order if the key strings ever collided.
+  const existing = await prisma.order.findUnique({
+    where: { accountId_idempotencyKey: { accountId: account.id, idempotencyKey: input.idempotencyKey } },
+    include: { executions: true, events: true },
+  });
+  if (existing) return { order: existing, replayed: true, riskDecision: null };
+
+  const instrument = await prisma.instrument.findUnique({ where: { symbol: input.symbol.toUpperCase() } });
+  if (!instrument || !instrument.isTradable) {
+    throw new OrderValidationError(`${input.symbol} is not a tradable instrument.`);
+  }
+  if (!instrument.isFractionable && !Number.isInteger(input.quantity)) {
+    throw new OrderValidationError(`${input.symbol} does not support fractional quantities.`);
+  }
+
+  const ctx = await buildRiskCheckContext(account.id, instrument.id, instrument.symbol);
+  const decision = evaluateOrderRisk(
+    {
+      side: input.side,
+      type: input.type,
+      quantity: input.quantity,
+      limitPrice: input.limitPrice,
+      stopPrice: input.stopPrice,
+      stopLossPrice: input.stopLossPrice,
+      takeProfitPrice: input.takeProfitPrice,
+      isExtendedHours: input.isExtendedHours,
+    },
+    ctx,
+  );
+
+  const order = await prisma.$transaction(async (tx) => {
+    const created = await tx.order.create({
+      data: {
+        accountId: account.id,
+        instrumentId: instrument.id,
+        side: input.side,
+        type: input.type,
+        duration: input.duration,
+        quantity: input.quantity,
+        limitPrice: input.limitPrice,
+        stopPrice: input.stopPrice,
+        stopLossPrice: input.stopLossPrice,
+        takeProfitPrice: input.takeProfitPrice,
+        isExtendedHours: input.isExtendedHours,
+        idempotencyKey: input.idempotencyKey,
+        status: decision.allowed ? "PENDING_NEW" : "REJECTED",
+        rejectReason: decision.allowed ? null : decision.message,
+      },
+    });
+
+    await tx.riskEvent.create({
+      data: {
+        userId,
+        orderId: created.id,
+        ruleKey: decision.ruleKey,
+        decision: decision.allowed ? "allowed" : "rejected",
+        detail: {
+          message: decision.message,
+          warnings: decision.warnings,
+          estimatedEntryPrice: decision.estimatedEntryPrice,
+          estimatedNotional: decision.estimatedNotional,
+        } as never,
+      },
+    });
+
+    await tx.orderEvent.create({
+      data: {
+        orderId: created.id,
+        type: decision.allowed ? "submitted" : "rejected",
+        detail: { ruleKey: decision.ruleKey, message: decision.message } as never,
+      },
+    });
+
+    return created;
+  });
+
+  await recordAuditEvent({
+    userId,
+    category: "order",
+    action: decision.allowed ? "order_submitted" : "order_rejected",
+    targetType: "order",
+    targetId: order.id,
+    detail: { symbol: instrument.symbol, ruleKey: decision.ruleKey },
+  });
+
+  if (decision.allowed) {
+    if (isAlpacaBrokerEnabled()) {
+      await submitLocalOrderToAlpaca(order.id);
+    } else {
+      await attemptImmediateFill(order.id);
+    }
+  }
+
+  const final = await prisma.order.findUniqueOrThrow({
+    where: { id: order.id },
+    include: { executions: true, events: { orderBy: { createdAt: "asc" } }, instrument: true },
+  });
+
+  if (final.status === "FILLED") {
+    await createNotificationDeduped({
+      userId,
+      category: "order",
+      title: `${final.side} ${instrument.symbol} filled`,
+      body: `${final.quantity} shares of ${instrument.symbol} filled.`,
+      dedupeKey: `order:${final.id}:filled`,
+      cooldownMinutes: 0,
+    });
+  } else if (final.status === "REJECTED") {
+    await createNotificationDeduped({
+      userId,
+      category: "risk",
+      title: `${final.side} ${instrument.symbol} rejected`,
+      body: final.rejectReason ?? "Order rejected by risk engine.",
+      dedupeKey: `order:${final.id}:rejected`,
+      cooldownMinutes: 0,
+    });
+  }
+
+  return { order: final, replayed: false, riskDecision: decision };
+}
+
+export async function cancelOrder(userId: string, orderId: string) {
+  const order = await prisma.order.findUnique({ where: { id: orderId }, include: { account: true } });
+  if (!order || order.account.userId !== userId) {
+    throw new OrderValidationError("Order not found.");
+  }
+  const updated = order.externalOrderId
+    ? await cancelAlpacaOrder(orderId, order.externalOrderId)
+    : await cancelOrderInBroker(orderId);
+  await recordAuditEvent({
+    userId,
+    category: "order",
+    action: "order_canceled",
+    targetType: "order",
+    targetId: orderId,
+  });
+  return updated;
+}
+
+export async function listOrders(userId: string) {
+  const account = await prisma.account.findFirst({ where: { userId }, orderBy: { createdAt: "asc" } });
+  if (!account) return [];
+  return prisma.order.findMany({
+    where: { accountId: account.id },
+    include: { instrument: true, executions: true },
+    orderBy: { submittedAt: "desc" },
+    take: 100,
+  });
+}
