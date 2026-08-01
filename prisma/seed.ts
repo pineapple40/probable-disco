@@ -140,10 +140,16 @@ async function main() {
 
   await prisma.riskProfile.upsert({
     where: { userId: demoUser.id },
-    update: {},
+    // The demo account is used by e2e tests that place orders at whatever
+    // wall-clock time CI happens to run (including outside NYSE hours, or on
+    // a weekend) - restrictedHoursOnly must stay off here or those tests
+    // become flaky based on when CI runs, not on any actual bug. Same
+    // reasoning tests/integration/orders.test.ts already documents.
+    update: { restrictedHoursOnly: false },
     create: {
       userId: demoUser.id,
       accountId: account.id,
+      restrictedHoursOnly: false,
     },
   });
 
